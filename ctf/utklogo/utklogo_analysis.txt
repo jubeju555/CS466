@@ -1,0 +1,27 @@
+UTK Logo CTF Challenge Analysis
+================================
+
+Image: utk-logo2_2.jpg
+Location: /home/judah/CS466/
+
+Flag Format: cosc466-flag-{phone number}
+Example: cosc466-flag-{865-123-4567}
+
+Findings:
+---------
+1. GPS Coordinates found in EXIF data:
+   - Latitude: 35°57'31.14"N
+   - Longitude: 83°55'27.99"W
+   - Decimal: 35.958650, -83.924442
+   
+2. Google Maps Link:
+   https://www.google.com/maps?q=35.958650,-83.924442
+
+3. Next Steps:
+   - Look up the location on Google Maps
+   - Find the building/location at those coordinates
+   - Search for the phone number of that location
+   - Format as: cosc466-flag-{xxx-xxx-xxxx}
+
+The coordinates appear to be in Knoxville, TN (near UTK campus).
+This is likely pointing to a specific building on campus.
