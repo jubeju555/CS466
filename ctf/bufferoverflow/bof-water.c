@@ -16,3 +16,4 @@ int main() {
         system("cat flag.answer");
     }
 }
+
