@@ -12,10 +12,10 @@ If you just want the easiest command for the exam:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py
+/home/jbenjam7/cs466/.venv/bin/python exploit.py
 ```
 
-Helper script path: `ctf/formatstring4/exploit_easy.py`
+Helper script path: `ctf/formatstring4/exploit.py`
 
 It now does the full exam workflow for you:
 - leaked addresses
@@ -30,8 +30,8 @@ Then it sends the payload in the same connection.
 If you want to force one mode:
 
 ```bash
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode local
 ```
 
 ---
@@ -146,20 +146,20 @@ Local:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode local
 ```
 
 Remote:
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote
 ```
 
 Optional custom command:
 
 ```bash
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --cmd "id\nexit\n"
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote --cmd "id\nexit\n"
 ```
 
 If the binary changes a little but still leaks `jump` and `buffer` in the same banner, this script still works as long as the leak line keeps the same idea: one code address and one stack address. It waits for the full prompt line before parsing, so it is less likely to grab a partial leak.
@@ -185,33 +185,33 @@ If this challenge appears on the exam, type these commands exactly.
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote
 ```
 
 ### Fast default (auto mode)
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py
+/home/jbenjam7/cs466/.venv/bin/python exploit.py
 ```
 
 ### Local practice
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode local
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode local
 ```
 
 ### If offset changes, force offset scan target
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --ret-offset 48
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote --ret-offset 48
 ```
 
 ### If you want a custom command after shell pops
 
 ```bash
 cd /home/jbenjam7/cs466/ctf/formatstring4
-/home/jbenjam7/cs466/.venv/bin/python exploit_easy.py --mode remote --cmd "id\ncat flag.txt\nexit\n"
+/home/jbenjam7/cs466/.venv/bin/python exploit.py --mode remote --cmd "id\ncat flag.txt\nexit\n"
 ```

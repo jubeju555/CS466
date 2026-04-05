@@ -159,7 +159,7 @@ What's your name? Hello, cosc466-flag-{HqeXx3gG}, how are you?
 Use:
 
 ```bash
-/home/jbenjam7/cs466/.venv/bin/python exploit_remote.py
+/home/jbenjam7/cs466/.venv/bin/python exploit.py
 ```
 
 The script is fully commented and follows the same manual steps:
