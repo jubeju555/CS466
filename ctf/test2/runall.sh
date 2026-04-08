@@ -86,6 +86,11 @@ if [[ "$MODE" == "remote" ]]; then
 fi
 
 FLAG_REGEX='cosc[0-9-]*-flag-\{[^}]+\}'
+FLAG_LOG_FILE="$SCRIPT_DIR/cosc_flags.txt"
+
+if [[ "$MODE" == "local" ]]; then
+  : > "$FLAG_LOG_FILE"
+fi
 
 LOCAL_SCRIPTS=(
   "fs1.py"
@@ -136,6 +141,7 @@ run_task() {
     local found
     found="$(grep -Eio "$FLAG_REGEX" "$tmp" | head -n1)"
     echo "[+] FLAG DETECTED in $label: $found"
+    printf '%s | %s\n' "$label" "$found" >> "$FLAG_LOG_FILE"
     rm -f "$tmp"
     return 10
   fi
@@ -167,6 +173,7 @@ if [[ "$MODE" == "local" ]]; then
     done
   done
 else
+  : > "$FLAG_LOG_FILE"
   for entry in "${REMOTE_TASKS[@]}"; do
     IFS='|' read -r script args_str <<< "$entry"
     if [[ -n "$args_str" ]]; then
@@ -198,4 +205,8 @@ else
   else
     echo "[*] Finished all remote scripts (--all mode)."
   fi
+fi
+
+if [[ -s "$FLAG_LOG_FILE" ]]; then
+  echo "[*] Flag log saved to $FLAG_LOG_FILE"
 fi
