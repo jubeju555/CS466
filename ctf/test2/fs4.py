@@ -232,7 +232,9 @@ def read_until_banner_remote(sock: socket.socket) -> str:
     return out.decode("latin1", errors="ignore")
 
 
-def read_tail_local(proc: subprocess.Popen[bytes], timeout: float = POST_TIMEOUT) -> str:
+def read_tail_local(
+    proc: subprocess.Popen[bytes], timeout: float = POST_TIMEOUT
+) -> str:
     if proc.stdout is None:
         return ""
     fd = proc.stdout.fileno()
@@ -369,7 +371,11 @@ def main() -> None:
         modes = ["remote", "local"]
 
     success_token = f"AUTO_OK_{secrets.token_hex(6)}"
-    cmd_text = args.cmd if args.cmd is not None else DEFAULT_CMD_TEMPLATE.format(token=success_token)
+    cmd_text = (
+        args.cmd
+        if args.cmd is not None
+        else DEFAULT_CMD_TEMPLATE.format(token=success_token)
+    )
     cmd_bytes = cmd_text.encode("ascii", errors="ignore")
 
     last_error: Exception | None = None
