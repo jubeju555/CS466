@@ -6,7 +6,8 @@ python3 fs1.py          # Runs locally against random-game
 python3 fs2.py          # Runs locally against hidden_string
 python3 fs3.py          # Runs locally against login
 python3 fs4.py          # Runs locally against jump
-./run_all_tests.sh      # Runs all 6 exploits locally
+./run_all_tests.sh      # Runs every exploit against every bundled binary
+./runall.sh             # Same local matrix, with flag detection and optional stop-on-flag
 ```
 
 ## Remote Testing (Explicit)
@@ -22,14 +23,14 @@ python3 fs1.py --mode remote --host ctf.example.com --port 9000
 
 ## Exam Mode
 ```bash
-# Run all, stop on first flag, 10s timeout
+# Run the local matrix, stop on first flag, 10s timeout
 ./runall.sh --stop-on-flag --timeout 10
 ```
 
 ## Port Summary
 - **Local Mode**: Ports ignored (uses binaries locally)
 - **Remote Mode**: Each script accepts --host and --port
-- **runall.sh**: Prompts for single shared port when remote
+- **runall.sh**: Local mode runs the full script-vs-binary matrix; remote mode prompts for a single shared port
 
 ## Files in test2
 | File | Purpose |
@@ -40,8 +41,8 @@ python3 fs1.py --mode remote --host ctf.example.com --port 9000
 | fs4.py | formatstring4 return-overwrite exploit (adaptive) |
 | fp.py | framepointer pivot exploit |
 | io.py | integer-overflow exploit |
-| runall.sh | Run all 4 format-string exploits |
-| run_all_tests.sh | Run all 6 exploits with detailed output |
+| runall.sh | Run the local script-vs-binary matrix or the remote format-string set |
+| run_all_tests.sh | Local wrapper for the exhaustive matrix runner |
 | random-game | formatstring1 binary |
 | hidden_string | formatstring2 binary |
 | login | formatstring3 binary |
@@ -54,4 +55,4 @@ python3 fs1.py --mode remote --host ctf.example.com --port 9000
 ✅ All ports configurable for remote testing
 ✅ runall.sh provides unified port management
 ✅ No hardcoded ports in scripts (only fallback defaults)
-✅ All 6 challenges working locally
+✅ Local matrix covers every script against every bundled binary
