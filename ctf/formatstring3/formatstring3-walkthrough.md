@@ -26,9 +26,9 @@ The rest of this page shows the exact manual process.
 
 ---
 
-## Method 1: Do It Manually First
+## Manual Method: Bash & GDB Exploration
 
-This is the version to practice before the exam.
+This is the version to practice before the exam. Learn the technique by running it manually.
 
 ### 1. Confirm target address and baseline output
 
@@ -131,9 +131,9 @@ If `second_value < first_value`, use wrap-around:
 
 ---
 
-## Method 2: Python Script Workflow
+## Python Script Method
 
-Use this for repeatability after you understand Method 1. The script automates:
+Use this for repeatability after you understand the manual method. The script automates:
 - Stack offset discovery
 - Halfword splitting
 - Padding calculation
@@ -195,9 +195,13 @@ python3 exploit.py exploit 0x12345678 0xAABBCCDD --remote
 python3 exploit.py exploit 0x80e6048 0xD0C0FFEE
 ```
 
-### How the Python script differs from manual method
+---
 
-**Manual method (Method 0):**
+## Comparison: Manual vs. Script Method
+
+### How the Python script differs from the manual method
+
+**Manual method:**
 - You discover offset by hand: `AAAABBBB.%0$p...%8$p`
 - You manually split: high = 0xD0BF, low = 0xFFEE
 - You manually convert to little-endian bytes
@@ -235,7 +239,9 @@ If the stack layout changes and offset moves from %5 to something else:
 
 ---
 
-## Common Pitfalls
+## Guidance for Exam & Practice
+
+### Common Pitfalls
 
 1. Missing `printf` in shell pipeline
 - Wrong: `'\x4a...\n' | nc ...`
@@ -254,9 +260,7 @@ If the stack layout changes and offset moves from %5 to something else:
 5. Treating 128-byte input as a blocker
 - Width specifiers (`%53432c`) generate large output count without needing giant input
 
----
-
-## Exam workflow to memorize
+### Exam Workflow to Memorize
 
 Before the exam, practice this sequence until it is automatic:
 
@@ -269,13 +273,13 @@ Before the exam, practice this sequence until it is automatic:
 
 That is the full pattern. The exact numbers change, but the workflow does not.
 
-## Learning Path & Recommended Workflow
+### Learning Path & Recommended Workflow
 
 ### For first-time learning:
-1. Read **Method 1** completely
+1. Read **Manual Method: Bash & GDB Exploration** completely
 2. Run steps 1-6 manually in terminal
 3. Verify you get the flag with `printf | nc`
-4. Then read **Method 2** to see how it automates everything
+4. Then read **Python Script Method** to see how it automates everything
 
 ### For repeated exploitation:
 1. Use `python3 exploit.py find-offset` to verify current stack layout

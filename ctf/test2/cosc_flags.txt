@@ -1,4 +1,0 @@
-fs1/random-game | cosc466-flag-{z4-TXkh#wu&7E4vN}
-fs2/hidden_string | cosc466-flag-{HqeXx3gG}
-fp/challenge | cosc466-flag-{fr4m3}
-io/challenge-io | cosc466-flag-{1nt3g3r_0v3rfl0w}
