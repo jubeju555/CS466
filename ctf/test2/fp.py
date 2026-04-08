@@ -175,6 +175,12 @@ def main() -> None:
         default=DEFAULT_BINARY,
         help="path to the local challenge binary (default: ./challenge)",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["local", "remote"],
+        default="local",
+        help="mode (local only for this exploit, default: local)",
+    )
     args = parser.parse_args()
 
     pid, master_fd = launch_with_pty(args.binary)

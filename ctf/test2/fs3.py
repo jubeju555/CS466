@@ -305,8 +305,15 @@ def parse_args():
         action="store_true",
         help="use remote target (shorthand for --mode remote)",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST, help="remote host (used when --mode remote)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="remote port (used when --mode remote)",
+    )
     parser.add_argument("--binary", default=DEFAULT_BINARY)
     parser.add_argument("--cwd", default=DEFAULT_LOCAL_CWD)
     return parser.parse_args()
