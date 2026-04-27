@@ -26,7 +26,7 @@ The `cmd()` function in `attack.c` uses `gets(buffer)` to read a 12-byte buffer 
 | `pop ebx; ret` gadget | `0x0804901e` |
 | Writable memory (`.bss`) | `0x0804c140` |
 
----
+---  
 
 ## Using the Script
 
